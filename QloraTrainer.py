@@ -200,7 +200,7 @@ class QloraTrainer:
             model=self.merged_model,
             tokenizer=self.tokenizer,
         )
-        self._run.log_model(name="test-model", model=pl, framework="transformers")
+        self._run.log_model(name="llama-2", model=pl, framework="transformers")
 
     def push_to_hub(self):
         """Push merged model to HuggingFace Hub"""
