@@ -10,3 +10,4 @@ sentencepiece
 scipy
 peft
 tensorboardX
+mlfoundry==0.9.2

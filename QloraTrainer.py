@@ -1,22 +1,64 @@
+import logging
+import math
+
 import torch
 import transformers
 from peft import (LoraConfig, PeftModel, get_peft_model,
                   prepare_model_for_kbit_training)
-from transformers import (AutoModelForCausalLM, AutoTokenizer,
-                          BitsAndBytesConfig, LlamaForCausalLM, LlamaTokenizer)
+from transformers import (AutoModelForCausalLM, AutoTokenizer, TrainerCallback,
+                          BitsAndBytesConfig, LlamaForCausalLM, LlamaTokenizer, pipeline)
+from transformers.integrations import rewrite_logs
+import numpy as np
+
+import mlfoundry
 
 from data_processor.RawTextDataProcessor import RawTextDataProcessor
 from data_processor.VicunaDataProcessor import VicunaDataProcessor
 
+class Callback(TrainerCallback):
+    def __init__(
+        self,
+        run: mlfoundry.MlFoundryRun,
+    ):
+        self._run = run
+    def on_log(self, args, state, control, logs, model=None, **kwargs):
+        if not state.is_world_process_zero:
+            return
+
+        for loss_key, perplexity_key in [("loss", "train_perplexity"), ("eval_loss", "eval_perplexity")]:
+            if loss_key in logs:
+                try:
+                    perplexity = math.exp(logs[loss_key])
+                except OverflowError:
+                    perplexity = float("inf")
+                    logging.warning("Encountered inf in eval perplexity, cannot log it as a metric")
+                logs[perplexity_key] = perplexity
+
+        metrics = {}
+        for k, v in logs.items():
+            if isinstance(v, (int, float, np.integer, np.floating)) and math.isfinite(v):
+                metrics[k] = v
+            else:
+                logging.warning(
+                    f'Trainer is attempting to log a value of "{v}" of'
+                    f' type {type(v)} for key "{k}" as a metric.'
+                    " Mlfoundry's log_metric() only accepts finite float and"
+                    " int types so we dropped this attribute."
+                )
+        try:
+            self._run.log_metrics(rewrite_logs(metrics), step=state.global_step)
+        except Exception:
+            logging.info("Error raised while publishing logs to mlfoundry")
 
 class QloraTrainer:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, run: mlfoundry.MlFoundryRun):
         self.config = config
         self.tokenizer = None
         self.base_model = None
         self.adapter_model = None
         self.merged_model = None
         self.data_processor = None
+        self._run = run
 
     def load_base_model(self):
         model_id = self.config["base_model"]
@@ -75,7 +117,7 @@ class QloraTrainer:
         config_dict = self.config["trainer"]
         trainer = transformers.Trainer(
             model=model,
-            train_dataset=data["train"],
+            train_dataset=data["train"].shuffle(seed=42).select(range(5)),
             args=transformers.TrainingArguments(
                 per_device_train_batch_size=config_dict["batch_size"],
                 gradient_accumulation_steps=config_dict["gradient_accumulation_steps"],
@@ -89,6 +131,7 @@ class QloraTrainer:
                 #optim="adamw"
             ),
             data_collator=transformers.DataCollatorForLanguageModeling(self.tokenizer, mlm=False),
+            callbacks=[Callback(run=self._run)],
         )
         model.config.use_cache = False  # silence the warnings. Please re-enable for inference!
         trainer.train()
@@ -115,6 +158,13 @@ class QloraTrainer:
         model_save_path = f"{self.config['model_output_dir']}/{self.config['model_name']}"
         self.merged_model.save_pretrained(model_save_path)
         self.tokenizer.save_pretrained(model_save_path)
+
+        pl = pipeline(
+            "text-generation",
+            model=self.merged_model,
+            tokenizer=self.tokenizer,
+        )
+        self._run.log_model(ml_repo="llama2", name="test-model", model=pl, framework="transformers")
 
     def push_to_hub(self):
         """ Push merged model to HuggingFace Hub """
