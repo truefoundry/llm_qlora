@@ -23,7 +23,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = read_yaml_file(args.config_path)
-    with mlfoundry.create_run(ml_repo="llama2") as run:
+    with client.create_run(ml_repo="llama2") as run:
         trainer = QloraTrainer(config, run)
 
         print("Load base model")
