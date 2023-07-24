@@ -137,7 +137,9 @@ class QloraTrainer:
         config_dict = self.config["trainer"]
         trainer = transformers.Trainer(
             model=model,
-            train_dataset=data["train"].shuffle(seed=42).select(len(data["train"] // 2)),
+            train_dataset=data["train"]
+            .shuffle(seed=42)
+            .select(range(len(data["train"]) // 2)),
             args=transformers.TrainingArguments(
                 per_device_train_batch_size=config_dict["batch_size"],
                 gradient_accumulation_steps=config_dict["gradient_accumulation_steps"],
