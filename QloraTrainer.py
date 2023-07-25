@@ -139,7 +139,7 @@ class QloraTrainer:
             model=model,
             train_dataset=data["train"]
             .shuffle(seed=42)
-            .select(range(len(data["train"]) // 2)),
+            .select(range(int(math.ceil(len(data["train"]) * 0.7)))),
             args=transformers.TrainingArguments(
                 per_device_train_batch_size=config_dict["batch_size"],
                 gradient_accumulation_steps=config_dict["gradient_accumulation_steps"],
